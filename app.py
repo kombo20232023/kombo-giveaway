@@ -16,7 +16,7 @@ VERSION, BUILD = "v0.5.0", 6
 HERE = Path(__file__).parent
 TW = timezone(timedelta(hours=8))
 
-st.set_page_config(page_title="KOMBO 扭蛋抽獎", page_icon=str(HERE / "k_logo.png"), layout="centered")
+st.set_page_config(page_title="KOMBO 抽獎活動", page_icon=str(HERE / "k_logo.png"), layout="centered")
 
 
 def secret(key, default=None):
@@ -86,7 +86,7 @@ if ss.mode == "show" and ss.get("draw"):
 
 
 # ---------- 設定 ----------
-st.markdown(f"## KOMBO 扭蛋抽獎\n<span style='color:#5A6B85;font-size:13px'>{VERSION} · BUILD {BUILD}</span>",
+st.markdown(f"## KOMBO 抽獎活動 - KD 半筒 \n<span style='color:#5A6B85;font-size:13px'>{VERSION} · BUILD {BUILD}</span>",
             unsafe_allow_html=True)
 if DEMO:
     st.info("還沒設定 Meta 權杖，目前使用測試留言。設定好 FB_PAGE_TOKEN 後就會抓真的留言。")
