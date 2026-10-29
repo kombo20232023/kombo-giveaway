@@ -29,5 +29,14 @@ def fake_comments(n: int = 366, own: str = "kombo_badminton", seed: int = 202610
     out += [{"user": own, "text": "+1 謝謝大家參加！"}, {"user": own, "text": "+1 開獎時間見貼文說明"}]
     r.shuffle(out)
     for i, c in enumerate(out):
-        c["id"], c["time"] = str(i), ""
-    return out
+        c["id"], c["time"], c["kind"], c["parent"] = f"m{i}", "", "main", None
+    # 回覆：KOMBO 自己的感謝回覆，以及參加者在別人留言底下回覆參加
+    replies = []
+    for k in range(round(n * 0.19)):
+        p = r.choice(out)
+        if k % 5 < 3:
+            replies.append({"user": own, "text": r.choice(["謝謝參加！", "祝你好運～", "收到！"])})
+        else:
+            replies.append({"user": r.choice(users), "text": fill(r.choice(GOOD))})
+        replies[-1].update(id=f"r{k}", time="", kind="reply", parent=p["id"])
+    return out + replies

@@ -4,18 +4,19 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
 from demo import fake_comments
 from ig_api import IGClient, IGError, shortcode_from_url
-from rules import draw_winners, eligible
+from rules import draw_winners, selected
 
-VERSION, BUILD = "v0.4.0", 4
+VERSION, BUILD = "v0.5.0", 6
 HERE = Path(__file__).parent
 TW = timezone(timedelta(hours=8))
 
-st.set_page_config(page_title="KOMBO 抽獎活動 - KD (半筒)", page_icon=str(HERE / "k_logo.png"), layout="centered")
+st.set_page_config(page_title="KOMBO 扭蛋抽獎", page_icon=str(HERE / "k_logo.png"), layout="centered")
 
 
 def secret(key, default=None):
@@ -114,6 +115,8 @@ if st.button("抓留言", type="primary", use_container_width=True):
         ss.fetched = {"comments": comments, "post": post, "own": own,
                       "at": datetime.now(TW).strftime("%Y/%m/%d %H:%M")}
         ss.exclude = own
+        ss.overrides = {}
+        ss.ed_ver = ss.get("ed_ver", 0) + 1
         ss.pop("draw", None)
     except IGError as e:
         st.error(str(e))
@@ -122,13 +125,23 @@ f = ss.get("fetched")
 if not f:
     st.stop()
 
+
+def fmt_time(t: str) -> str:
+    try:
+        return datetime.strptime(t, "%Y-%m-%dT%H:%M:%S%z").astimezone(TW).strftime("%m/%d %H:%M")
+    except (ValueError, TypeError):
+        return ""
+
+
 post, comments = f["post"], f["comments"]
+mains = sum(c.get("kind", "main") == "main" for c in comments)
 cap = (post.get("caption") or "").replace("\n", " ")
 st.markdown(f"**{cap[:40]}{'…' if len(cap) > 40 else ''}**")
-st.caption(f"主留言 {len(comments)} 則（貼文上顯示 {post.get('comments_count', '—')} 則，含回覆）· 抓取時間 {f['at']}")
-with st.expander("看全部留言"):
-    st.dataframe([{"帳號": "@" + c["user"], "留言": c["text"]} for c in comments],
-                 use_container_width=True, hide_index=True)
+shown = post.get("comments_count")
+st.caption(f"共抓到 {len(comments)} 則：主留言 {mains}、回覆 {len(comments) - mains}"
+           f"（IG 上顯示 {shown if shown is not None else '—'} 則）· 抓取時間 {f['at']}")
+if isinstance(shown, int) and shown > len(comments):
+    st.caption(f"有 {shown - len(comments)} 則抓不到，通常是被 IG 自動隱藏或已刪除的留言。")
 
 c1, c2 = st.columns(2)
 kw = c1.text_input("關鍵字", value="+1", key="kw", help="留空 = 不限")
@@ -142,16 +155,55 @@ with st.expander("進階設定（速度、音效、排除帳號）"):
     sound = st.toggle("音效", value=True, key="sound")
     exclude = st.text_input("排除帳號", key="exclude")
 
-pool = eligible(comments, kw, tags, exclude)
+# ---------- 參加名單（自動預設 + 手動勾選） ----------
+ss.setdefault("overrides", {})
+ss.setdefault("ed_ver", 0)
+flags = selected(comments, kw, tags, exclude, ss.overrides)
+pool = [c for c, ok in zip(comments, flags) if ok]
 users = len({c["user"] for c in pool})
-secs = round(-(-len(pool) // batch) * 1.05 / paper + 1)
-st.markdown(f"符合條件 **{len(pool)}** 則（**{users}** 位）· 投入約 {secs} 秒")
+secs = round(-(-len(pool) // batch) * 1.05 / paper + 1) if pool else 0
+
+st.markdown("#### 參加名單")
+st.markdown(f"已勾選 **{len(pool)}** 則（**{users}** 位）· 沒勾 {len(comments) - len(pool)} 則 · 投入約 {secs} 秒")
+st.caption("符合關鍵字、標記人數的會自動打勾，KOMBO 自己的留言不勾。可以直接點「參加」欄位手動調整，手動改過的會一直保留。")
+v1, v2 = st.columns(2)
+view = v1.radio("顯示", ["全部", "已勾選", "沒勾選"], horizontal=True, key="view")
+q = v2.text_input("搜尋帳號或留言", key="q").strip().lower()
+
+rows = []
+for c, ok in zip(comments, flags):
+    if (view == "已勾選" and not ok) or (view == "沒勾選" and ok):
+        continue
+    if q and q not in (c["user"] + " " + c["text"]).lower():
+        continue
+    rows.append({"參加": ok, "帳號": "@" + c["user"], "留言": c["text"],
+                 "類型": "回覆" if c.get("kind") == "reply" else "主留言",
+                 "手動": "已手動" if c["id"] in ss.overrides else "", "時間": fmt_time(c.get("time")), "id": c["id"]})
+df = pd.DataFrame(rows, columns=["參加", "帳號", "留言", "類型", "手動", "時間", "id"])
+edited = st.data_editor(
+    df, key=f"ed{ss.ed_ver}-{view}-{q}", hide_index=True, use_container_width=True,
+    height=min(430, 40 + 35 * max(len(df), 1)),
+    column_order=["參加", "帳號", "留言", "類型", "手動", "時間"],
+    column_config={"參加": st.column_config.CheckboxColumn("參加", width="small"),
+                   "留言": st.column_config.TextColumn("留言", width="large")},
+    disabled=["帳號", "留言", "類型", "手動", "時間", "id"])
+if len(df):
+    changed = [i for i in range(len(df)) if bool(edited.iloc[i]["參加"]) != bool(df.iloc[i]["參加"])]
+    if changed:
+        for i in changed:
+            ss.overrides[df.iloc[i]["id"]] = bool(edited.iloc[i]["參加"])
+        ss.ed_ver += 1
+        st.rerun()
+if ss.overrides and st.button(f"清除手動調整（{len(ss.overrides)} 則），全部恢復自動勾選"):
+    ss.overrides = {}
+    ss.ed_ver += 1
+    st.rerun()
 
 if not pool:
-    st.error("沒有符合條件的留言，請調整關鍵字或標記人數。")
+    st.error("沒有勾選任何留言，請調整關鍵字、標記人數，或在名單裡手動勾選。")
     st.stop()
 if users < n_win:
-    st.error(f"符合條件的只有 {users} 位，請減少抽獎人數。")
+    st.error(f"勾選的只有 {users} 位，請減少抽獎人數。")
     st.stop()
 
 if st.button("抽出得主並進入動畫", type="primary", use_container_width=True):
@@ -165,4 +217,4 @@ if st.button("抽出得主並進入動畫", type="primary", use_container_width=
     }
     ss.mode = "show"
     st.rerun()
-st.caption("得主在按下按鈕時由伺服器的安全亂數抽出（每則留言一次機會，同一帳號只中一次），動畫是把結果演出來。")
+st.caption("只有打勾的留言會進扭蛋機。得主在按下按鈕時由伺服器的安全亂數抽出（每則留言一次機會，同一帳號只中一次），動畫是把結果演出來。")

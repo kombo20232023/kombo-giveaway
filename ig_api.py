@@ -91,14 +91,25 @@ class IGClient:
         raise IGError("在 KOMBO 的 IG 貼文裡找不到這個連結，請確認是自己帳號的貼文。")
 
     def comments(self, media_id: str, cap: int = 20000) -> list[dict]:
-        """主留言（不含回覆）。"""
+        """主留言和底下的回覆都抓。每筆有 kind = main / reply。"""
+        def row(c, kind, parent=None):
+            return {"id": c.get("id"), "user": c.get("username") or "（未知帳號）", "text": c.get("text") or "",
+                    "time": c.get("timestamp") or "", "kind": kind, "parent": parent}
+
         out, nxt = [], None
         while True:
             d = self._get(nxt) if nxt else self._get(
-                f"{media_id}/comments", {"fields": "id,text,username,timestamp", "limit": 50})
+                f"{media_id}/comments",
+                {"fields": "id,text,username,timestamp,replies.limit(50){id,text,username,timestamp}", "limit": 50})
             for c in d.get("data", []):
-                out.append({"id": c.get("id"), "user": c.get("username") or "（未知帳號）",
-                            "text": c.get("text") or "", "time": c.get("timestamp") or ""})
+                out.append(row(c, "main"))
+                rep = c.get("replies") or {}
+                while True:
+                    out.extend(row(r, "reply", c.get("id")) for r in rep.get("data", []))
+                    rn = (rep.get("paging") or {}).get("next")
+                    if not rn or len(out) >= cap:
+                        break
+                    rep = self._get(rn)
             nxt = (d.get("paging") or {}).get("next")
             if not nxt or len(out) >= cap:
                 return out
