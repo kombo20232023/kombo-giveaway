@@ -15,7 +15,7 @@ VERSION, BUILD = "v0.4.0", 4
 HERE = Path(__file__).parent
 TW = timezone(timedelta(hours=8))
 
-st.set_page_config(page_title="KOMBO 扭蛋抽獎", page_icon=str(HERE / "k_logo.png"), layout="centered")
+st.set_page_config(page_title="KOMBO 抽獎活動 - KD (半筒)", page_icon=str(HERE / "k_logo.png"), layout="centered")
 
 
 def secret(key, default=None):
