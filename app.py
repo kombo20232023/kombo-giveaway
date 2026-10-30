@@ -12,8 +12,10 @@ from demo import fake_comments
 from ig_api import IGClient, IGError, shortcode_from_url
 from fb_paste import parse_fb
 from rules import auto_flags, draw_winners, selected
+from threads_api import ThreadsClient, ThreadsError
+from threads_api import shortcode_from_url as threads_shortcode
 
-VERSION, BUILD = "v0.6.0", 7
+VERSION, BUILD = "v0.7.0", 8
 HERE = Path(__file__).parent
 TW = timezone(timedelta(hours=8))
 
@@ -55,11 +57,14 @@ require_password()
 
 TOKEN = secret("FB_PAGE_TOKEN")
 DEMO = not TOKEN
+TH_TOKEN = secret("THREADS_TOKEN")
+TH_DATE = secret("THREADS_TOKEN_DATE")
 
 
 # ---------- 動畫 ----------
 def gacha_html(entries, winners, settings) -> str:
-    data = {"entries": [{"user": e["user"], "text": e["text"]} for e in entries],
+    data = {"entries": [{"user": e["user"], "text": e["text"], **({"private": True} if e.get("private") else {})}
+                        for e in entries],
             "winners": winners, "settings": settings}
     js = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     head = ('<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -79,7 +84,8 @@ if ss.mode == "show" and ss.get("draw"):
     st.caption(f"{d['platform']} · {len(d['entries'])} 則參加 · 抽出時間 {d['at']}")
     with st.expander("得主名單（文字）"):
         at = "@" if d["settings"].get("atSign", True) else ""
-        lines = [f"{i + 1}. {at}{d['entries'][w]['user']}：{d['entries'][w]['text']}" for i, w in enumerate(d["winners"])]
+        lines = [f"{i + 1}. {'' if d['entries'][w].get('private') else at}{d['entries'][w]['user']}：{d['entries'][w]['text']}"
+                 for i, w in enumerate(d["winners"])]
         st.code("\n".join(lines), language=None)
     if st.button("回到設定", use_container_width=True):
         ss.mode = "setup"
@@ -90,13 +96,7 @@ if ss.mode == "show" and ss.get("draw"):
 # ---------- 設定 ----------
 st.markdown(f"## KOMBO 扭蛋抽獎\n<span style='color:#5A6B85;font-size:13px'>{VERSION} · BUILD {BUILD}</span>",
             unsafe_allow_html=True)
-if DEMO:
-    st.info("還沒設定 Meta 權杖，目前使用測試留言。設定好 FB_PAGE_TOKEN 後就會抓真的留言。")
-
 platform = st.radio("平台", ["IG", "FB", "Threads"], horizontal=True, key="platform")
-if platform == "Threads":
-    st.warning("Threads 還在接，目前可以用 IG 和 FB。")
-    st.stop()
 
 
 def new_list(comments, post, own):
@@ -109,6 +109,8 @@ def new_list(comments, post, own):
 
 
 if platform == "IG":
+    if DEMO:
+        st.info("還沒設定 Meta 權杖，目前使用測試留言。設定好 FB_PAGE_TOKEN 後就會抓真的留言。")
     url = st.text_input("IG 貼文連結", key="url", placeholder="https://www.instagram.com/p/……")
     if st.button("抓留言", type="primary", use_container_width=True):
         try:
@@ -125,7 +127,7 @@ if platform == "IG":
                     new_list(client.comments(post["id"]), post, own)
         except IGError as e:
             st.error(str(e))
-else:
+elif platform == "FB":
     st.caption("用電腦打開 FB 貼文 → 留言排序選「所有留言」→ 把「查看更多留言」點到底 → 從第一則選到最後一則複製，貼到下面。")
     fb_text = st.text_area("貼上 FB 留言", key="fb_text", height=180)
     if st.button("整理留言", type="primary", use_container_width=True):
@@ -134,6 +136,50 @@ else:
             st.error("看不懂貼上的內容，請確認是從 FB 留言區直接複製的。")
         else:
             new_list(parsed, {"caption": "FB 貼上的留言"}, secret("FB_PAGE_NAME", "KOMBO慷柏體育"))
+else:  # Threads
+    today = datetime.now(TW).date()
+    if not TH_TOKEN:
+        st.info("還沒設定 Threads 權杖，目前使用測試留言。設定好 THREADS_TOKEN 後就會抓真的留言。")
+    else:
+        left = None
+        try:
+            left = 60 - (today - datetime.strptime(str(TH_DATE), "%Y-%m-%d").date()).days
+        except (ValueError, TypeError):
+            pass
+        if left is None:
+            st.caption("Threads 權杖：不知道產生日期（Secrets 加上 THREADS_TOKEN_DATE 就會顯示剩幾天）")
+        elif left <= 0:
+            st.error("Threads 權杖可能已經過期，要重新到 Meta 產生權杖。")
+        elif left <= 10:
+            st.warning(f"Threads 權杖剩 {left} 天，請在下面續期。")
+        else:
+            st.caption(f"Threads 權杖還剩 {left} 天")
+        with st.expander("續期 Threads 權杖"):
+            st.caption("權杖產生超過 24 小時後才能續期。按下按鈕後，把出現的兩行貼到 Streamlit Secrets，取代原本的這兩行，再按 Save。")
+            if st.button("產生新權杖（60 天）", use_container_width=True):
+                try:
+                    ss.th_new = ThreadsClient(TH_TOKEN).refresh_token()["token"]
+                except ThreadsError as e:
+                    st.error(str(e))
+            if ss.get("th_new"):
+                st.code(f'THREADS_TOKEN = "{ss.th_new}"\nTHREADS_TOKEN_DATE = "{today:%Y-%m-%d}"', language="toml")
+    th_url = st.text_input("Threads 貼文連結", key="th_url", placeholder="https://www.threads.com/@……/post/……")
+    if st.button("抓留言", type="primary", use_container_width=True):
+        try:
+            if not TH_TOKEN:
+                new_list(fake_comments(120), {"caption": "Threads 測試貼文"}, "kombo_badminton")
+            else:
+                sc = threads_shortcode(th_url)
+                if not sc:
+                    raise ThreadsError("看不懂這個連結，請貼上 Threads 貼文的完整網址。")
+                client = ThreadsClient(TH_TOKEN)
+                with st.spinner("抓留言中……"):
+                    own = client.me()["username"]
+                    post = client.find_post(sc)
+                    post["caption"] = post.get("text")
+                    new_list(client.replies(post["id"]), post, own)
+        except ThreadsError as e:
+            st.error(str(e))
 
 f = ss.get("fetched")
 if not f or f.get("platform", "IG") != platform:
@@ -156,8 +202,11 @@ else:
     cap = (post.get("caption") or "").replace("\n", " ")
     st.markdown(f"**{cap[:40]}{'…' if len(cap) > 40 else ''}**")
     shown = post.get("comments_count")
-    st.caption(f"共抓到 {len(comments)} 則：主留言 {mains}、回覆 {len(comments) - mains}"
-               f"（IG 上顯示 {shown if shown is not None else '—'} 則）· 抓取時間 {f['at']}")
+    shown_txt = f"（IG 上顯示 {shown if shown is not None else '—'} 則）" if platform == "IG" else ""
+    st.caption(f"共抓到 {len(comments)} 則：主留言 {mains}、回覆 {len(comments) - mains}{shown_txt} · 抓取時間 {f['at']}")
+    n_private = sum(bool(c.get("private")) for c in comments)
+    if n_private:
+        st.caption(f"有 {n_private} 則來自私人帳號，Threads 不提供帳號名稱，顯示為「私人帳號＋編號」。")
     if isinstance(shown, int) and shown > len(comments):
         st.caption(f"有 {shown - len(comments)} 則抓不到，通常是被 IG 自動隱藏或已刪除的留言。")
 
@@ -201,7 +250,7 @@ for c, ok, (_, why) in zip(comments, flags, auto):
         continue
     if q and q not in (c["user"] + " " + c["text"]).lower():
         continue
-    rows.append({"參加": ok, "帳號": ("" if IS_FB else "@") + c["user"], "留言": c["text"], "說明": why,
+    rows.append({"參加": ok, "帳號": ("" if IS_FB or c.get("private") else "@") + c["user"], "留言": c["text"], "說明": why,
                  "類型": "回覆" if c.get("kind") == "reply" else "主留言",
                  "手動": "已手動" if c["id"] in ss.overrides else "", "時間": fmt_time(c.get("time")), "id": c["id"]})
 df = pd.DataFrame(rows, columns=["參加", "帳號", "留言", "說明", "類型", "手動", "時間", "id"])
